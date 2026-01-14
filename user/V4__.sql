@@ -1,0 +1,11 @@
+ALTER TABLE users
+    ADD display_name VARCHAR(255);
+
+ALTER TABLE users
+    ALTER COLUMN email TYPE VARCHAR(255) USING (email::VARCHAR(255));
+
+ALTER TABLE users
+    ALTER COLUMN password_hash TYPE VARCHAR(255) USING (password_hash::VARCHAR(255));
+
+ALTER TABLE users
+    ALTER COLUMN role TYPE VARCHAR(255) USING (role::VARCHAR(255));

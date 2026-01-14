@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/reserveme
+    username: reserveme_user
+    password: strongpassword
+  flyway:
+    schemas:
+      - public
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
