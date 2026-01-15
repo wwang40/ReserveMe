@@ -1,5 +1,6 @@
 package org.reserv.reserveme.reservation;
 
+import java.nio.file.AccessDeniedException;
 import org.reserv.reserveme.reservation.dto.CreateReservationRequest;
 import org.reserv.reserveme.user.UserRepository;
 import org.springframework.stereotype.Service;
@@ -7,6 +8,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
@@ -45,13 +50,61 @@ public class ReservationService {
         Reservation reservation = new Reservation(slotId, user, "ACTIVE");
         return reservationRepository.save(reservation);
     }
+    public void deleteReservation(UUID reservationId, UUID requesterId)
+            throws AccessDeniedException {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new IllegalArgumentException("Reservation not found"));
+        // Allow deletion by the requester (cancel) OR by the slot owner (reject)
+        UUID callerId = requesterId;
+        boolean isRequestingUser = reservation.getRequester().getId().equals(callerId);
+        boolean isSlotOwner = false;
+        var slotOpt = slotRepository.findById(reservation.getSlotId());
+        if (slotOpt.isPresent()) {
+            isSlotOwner = slotOpt.get().getOwner().getId().equals(callerId);
+        }
+
+        if (!isRequestingUser && !isSlotOwner) {
+            throw new AccessDeniedException("Not authorized to delete this reservation");
+        }
+
+        reservationRepository.delete(reservation);
+    }
+
+    public Reservation confirmReservation(UUID reservationId, UUID ownerId) throws AccessDeniedException {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new IllegalArgumentException("Reservation not found"));
+
+        // ensure caller is the owner of the slot
+        var slot = slotRepository.findById(reservation.getSlotId()).orElseThrow(() -> new IllegalArgumentException("Slot not found"));
+        if (!slot.getOwner().getId().equals(ownerId)) {
+            throw new AccessDeniedException("Not authorized to confirm this reservation");
+        }
+
+        reservation.setStatus("CONFIRMED");
+        return reservationRepository.save(reservation);
+    }
 
     public List<Reservation> listReservations() {
         return reservationRepository.findAll();
     }
 
     public List<Reservation> listReservationsForUser(UUID requesterId) {
-        return reservationRepository.findByRequesterId(requesterId);
+        // Return reservations either requested by the user (outgoing)
+        // or reservations for slots owned by the user (incoming).
+        List<Reservation> byRequester = reservationRepository.findByRequesterId(requesterId);
+
+        // find slot ids owned by user
+        List<org.reserv.reserveme.reservation.AvailabilitySlot> slots = slotRepository.findByOwnerId(requesterId);
+        List<Reservation> bySlots = new ArrayList<>();
+        for (var s : slots) {
+            bySlots.addAll(reservationRepository.findBySlotId(s.getId()));
+        }
+
+        // merge and dedupe preserving order (requester first)
+        Map<UUID, Reservation> map = new LinkedHashMap<>();
+        for (var r : byRequester) map.put(r.getId(), r);
+        for (var r : bySlots) map.putIfAbsent(r.getId(), r);
+        return new ArrayList<>(map.values());
     }
 
     public List<Reservation> findBySlotId(UUID slotId) {

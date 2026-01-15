@@ -18,6 +18,16 @@ public class AvailabilitySlotService {
         this.slotRepository = slotRepository;
         this.userRepository = userRepository;
     }
+    public void deleteSlot(UUID slotId, UUID requesterId) {
+        var slot = slotRepository.findById(slotId)
+                .orElseThrow(() -> new IllegalArgumentException("Slot not found"));
+
+        if (!slot.getOwner().getId().equals(requesterId)) {
+            throw new SecurityException("Not slot owner");
+        }
+
+        slotRepository.delete(slot);
+    }
 
     public AvailabilitySlot createSlot(AvailabilitySlotRequest request) {
         var owner = userRepository.findById(request.getOwnerId()).orElseThrow(() -> new IllegalArgumentException("Owner not found"));

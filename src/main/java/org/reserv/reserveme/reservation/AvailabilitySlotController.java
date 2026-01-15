@@ -35,7 +35,14 @@ public class AvailabilitySlotController {
         AvailabilitySlot s = slotService.createSlot(request);
         return AvailabilitySlotResponse.from(s);
     }
+    @DeleteMapping("/{slotId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable UUID slotId) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        UUID requesterId = UUID.fromString(auth.getPrincipal().toString());
 
+        slotService.deleteSlot(slotId, requesterId);
+    }
     @GetMapping
     public List<AvailabilitySlotResponse> list() {
         return slotService.listAll().stream().map(AvailabilitySlotResponse::from).collect(Collectors.toList());

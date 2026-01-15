@@ -43,5 +43,6 @@ public class Reservation {
     public UUID getSlotId() { return slotId; }
     public User getRequester() { return requester; }
     public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
     public Instant getCreatedAt() { return createdAt; }
 }
