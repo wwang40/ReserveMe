@@ -1,6 +1,6 @@
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/reserveme
+    url: jdbc:postgresql://host.docker.internal:5432/reserveme
     username: reserveme_user
     password: strongpassword
   flyway:

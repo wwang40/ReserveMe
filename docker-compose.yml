@@ -1,0 +1,34 @@
+version: "3.8"
+services:
+  db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: reserveme_user
+      POSTGRES_PASSWORD: strongpassword
+      POSTGRES_DB: reserveme
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reserv"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    image: wwang40/reserveme:latest
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/reserveme
+      SPRING_DATASOURCE_USERNAME: reserv
+      SPRING_DATASOURCE_PASSWORD: reservpass
+      APP_JWT_SECRET: 1d13b4945e141db8671921bf362ff1f1
+    restart: unless-stopped
+
+volumes:
+  db-data:
