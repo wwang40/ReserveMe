@@ -1,6 +1,6 @@
 # ReserveMe API Documentation (for frontend implementation)
 
-This document describes the REST API exposed by ReserveMe and provides request/response schemas, example requests/responses, and UI mapping recommendations to help generate a React frontend (for example with Copilot or other generators).
+This document describes the REST API exposed by ReserveMe and provides request/response schemas, example requests/responses, and UI mapping recommendations to help generate a React frontend.
 
 Base URL
 - http://localhost:8080
@@ -8,7 +8,7 @@ Base URL
 Authentication
 - JWT-based authentication using `/api/auth/register` and `/api/auth/login`.
 - After login/register the server returns a JWT in the response body as `{ "token": "..." }`.
-- Frontend should store the token (in memory or secure storage) and include it in Authorization header: `Authorization: Bearer <token>`.
+- Frontend should store the token (in memory, secure storage, or httpOnly cookie) and include it in Authorization header: `Authorization: Bearer <token>`.
 
 JSON conventions
 - Dates/times are ISO-8601 instants (e.g., 2026-01-13T14:00:00Z).
@@ -57,7 +57,7 @@ Entities and DTOs (shapes)
   - id: UUID
   - slotId: UUID
   - requesterId: UUID
-  - status: string (e.g., ACTIVE)
+  - status: string (PENDING, CONFIRMED, REJECTED, CANCELLED)
   - createdAt: Instant
 
 - CreateReservationRequest
@@ -70,6 +70,22 @@ Entities and DTOs (shapes)
   - requesterId: UUID
   - status: string
   - createdAt: Instant
+
+---
+
+Statuses & semantics
+- PENDING: A requester has asked to reserve a slot. The owner must accept or reject.
+- CONFIRMED: Owner accepted the reservation. This should appear under "confirmed reservations" for both the requester and the owner.
+- REJECTED: Owner rejected the incoming request. Requester should see it as rejected.
+- CANCELLED: Either side cancelled an existing PENDING or CONFIRMED reservation.
+
+Important behavior expectations (frontend/backed contract):
+- When a reservation is created it should be persisted with status PENDING.
+- Owners should see their incoming PENDING requests via an "incoming" endpoint.
+- Requesters should see their outgoing requests (PENDING) via a "byRequester" endpoint.
+- When owner accepts: status => CONFIRMED and slot should be considered reserved (further reservation attempts should return 409).
+- When owner rejects: status => REJECTED.
+- When either party cancels: status => CANCELLED.
 
 ---
 
@@ -105,25 +121,49 @@ Endpoints
   - Response: [AvailabilitySlotResponse]
 
 
-3) Reservations
+3) Reservations (request/confirm/reject/cancel flows)
 
 - POST /api/reservations
-  - Description: Create a reservation for a slot by a requester
+  - Description: Create a reservation request for a slot by a requester
   - Request body: CreateReservationRequest
-  - Behavior: If a reservation already exists with status ACTIVE for the same slot, returns 409 Conflict
+  - Behavior: Creates a reservation with status PENDING. If a CONFIRMED reservation already exists for the same slot, returns 409 Conflict
   - Response: ReservationResponse (201)
-  - Errors: 400 for missing requesterId/slotId or invalid references; 409 for slot already reserved
+  - Errors: 400 for missing requesterId/slotId or invalid references; 409 for slot already confirmed/reserved
 
 - GET /api/reservations
   - Description: List all reservations
   - Response: [ReservationResponse]
 
 - GET /api/reservations/byRequester?requesterId=<uuid>
-  - Description: List reservations requested by a user
+  - Description: List reservations created by a user (outgoing requests)
   - Response: [ReservationResponse]
 
-- GET /api/reservations/bySlot?slotId=<uuid>
-  - Description: List reservations for a slot
+- GET /api/reservations/incoming?ownerId=<uuid>
+  - Description: List incoming reservation requests for slots owned by `ownerId` (status filter optional)
+  - Response: [ReservationResponse]
+  - Notes: This is the endpoint owners use to view PENDING requests to accept/reject.
+
+- POST /api/reservations/{id}/accept
+  - Description: Owner accepts a PENDING reservation
+  - Path param: reservation id
+  - Behavior: Only the slot owner can accept. Transitions status PENDING -> CONFIRMED. Should mark the slot as reserved; further reservation attempts for that slot return 409.
+  - Response: ReservationResponse (200)
+  - Errors: 403 if caller is not slot owner; 404 if reservation not found; 409 if slot already confirmed by another reservation; 400 if reservation not in PENDING state
+
+- POST /api/reservations/{id}/reject
+  - Description: Owner rejects a PENDING reservation
+  - Behavior: Only the slot owner can reject. Transitions PENDING -> REJECTED.
+  - Response: ReservationResponse (200)
+  - Errors: 403 if caller is not slot owner; 404 if reservation not found; 400 if reservation not in PENDING state
+
+- POST /api/reservations/{id}/cancel
+  - Description: Cancels a reservation. Can be invoked by the requester or the owner depending on the business rules.
+  - Behavior: Transitions PENDING or CONFIRMED -> CANCELLED. If CONFIRMED, both users should see this reservation in their history as cancelled. If the owner cancels a PENDING reservation, the requester should be notified (status CANCELLED).
+  - Response: ReservationResponse (200)
+  - Errors: 403 if caller not involved in reservation; 404 if reservation not found
+
+- GET /api/reservations/confirmed/byUser?userId=<uuid>
+  - Description: List confirmed reservations (both where user is the requester or owner)
   - Response: [ReservationResponse]
 
 
@@ -157,22 +197,40 @@ curl -X POST -H "Content-Type: application/json" -d '{"email":"alice@example.com
 curl -X POST -H "Content-Type: application/json" -d '{"ownerId":"<user-uuid>","startTime":"2026-01-20T09:00:00Z","endTime":"2026-01-20T10:00:00Z"}' http://localhost:8080/api/slots
 ```
 
-- Create reservation
+- Create reservation (request)
 
 ```powershell
-curl -X POST -H "Content-Type: application/json" -d '{"requesterId":"<user-uuid>","slotId":"<slot-uuid>"}' http://localhost:8080/api/reservations
+curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer <token>" -d '{"requesterId":"<user-uuid>","slotId":"<slot-uuid>"}' http://localhost:8080/api/reservations
 ```
 
-- Register
+- Owner lists incoming requests
 
 ```powershell
-curl -X POST -H "Content-Type: application/json" -d '{"email":"alice@example.com","password":"securepassword"}' http://localhost:8080/api/auth/register
+curl -H "Authorization: Bearer <token>" http://localhost:8080/api/reservations/incoming?ownerId=<owner-uuid>
 ```
 
-- Login
+- Owner accepts a request
 
 ```powershell
-curl -X POST -H "Content-Type: application/json" -d '{"email":"alice@example.com","password":"securepassword"}' http://localhost:8080/api/auth/login
+curl -X POST -H "Authorization: Bearer <token>" http://localhost:8080/api/reservations/<reservation-id>/accept
+```
+
+- Owner rejects a request
+
+```powershell
+curl -X POST -H "Authorization: Bearer <token>" http://localhost:8080/api/reservations/<reservation-id>/reject
+```
+
+- Cancel a reservation (requester or owner)
+
+```powershell
+curl -X POST -H "Authorization: Bearer <token>" http://localhost:8080/api/reservations/<reservation-id>/cancel
+```
+
+- Get confirmed reservations for a user
+
+```powershell
+curl -H "Authorization: Bearer <token>" http://localhost:8080/api/reservations/confirmed/byUser?userId=<user-uuid>
 ```
 
 ---
@@ -185,21 +243,26 @@ Frontend mapping suggestions (React)
   3. CreateSlot (form) — POST /api/slots
   4. SlotDetail (slot + reservations) — GET /api/slots/byOwner and GET /api/reservations/bySlot
   5. ReservationList (for user) — GET /api/reservations/byRequester?requesterId=<id>
-  6. CreateReservation (choose slot + requester) — POST /api/reservations
-  7. Login (form) — POST /api/auth/login
-  8. Register (form) — POST /api/auth/register
+  6. IncomingRequests (for owner) — GET /api/reservations/incoming?ownerId=<id>
+  7. ConfirmedReservations (for user) — GET /api/reservations/confirmed/byUser?userId=<id>
+  8. CreateReservation (choose slot + requester) — POST /api/reservations
+  9. Login (form) — POST /api/auth/login
+  10. Register (form) — POST /api/auth/register
 
 - Components
   - UserSelect: fetches /api/users, displays a dropdown
   - SlotCard: displays slot times and owner
-  - ReservationCard: displays reservation info
+  - ReservationCard: displays reservation info and action buttons (accept/reject/cancel) depending on role & status
   - ErrorBanner: shows API error messages (400/409) from responses
   - LoginForm: handles login
   - RegisterForm: handles registration
 
 - Data flow and optimistic UI
   - When creating a reservation, POST to `/api/reservations`. If 201, update UI. If 409, show error banner (slot already reserved).
-  - On login/register, store the JWT and update the user context/state.
+  - Owners should poll or subscribe to incoming requests (or use web sockets) to get near-real-time updates when someone requests a slot.
+  - On accept: send POST to `/api/reservations/{id}/accept` and update local lists: remove from incoming, add to confirmed for both users.
+  - On reject: send POST to `/api/reservations/{id}/reject` and remove from incoming.
+  - On cancel: send POST to `/api/reservations/{id}/cancel` and update both users' lists accordingly.
 
 - Forms & validation
   - Do client-side validation (start < end, email format). Always show server-side error messages on failure.
@@ -211,35 +274,10 @@ Frontend mapping suggestions (React)
 
 ---
 
-Suggested React folder structure (simple)
-
-src/
-  api/
-    index.js           // wrapper around fetch/axios
-    users.js           // functions: listUsers, createUser
-    slots.js           // functions: listSlots, createSlot, listSlotsByOwner
-    reservations.js    // functions: listReservations, createReservation, listByRequester, listBySlot
-    auth.js             // functions: register, login
-  components/
-    UserSelect.jsx
-    SlotCard.jsx
-    ReservationCard.jsx
-    ErrorBanner.jsx
-    LoginForm.jsx
-    RegisterForm.jsx
-  pages/
-    UsersList.jsx
-    SlotsList.jsx
-    SlotDetail.jsx
-    CreateReservation.jsx
-    Login.jsx
-    Register.jsx
-
----
-
 Error handling conventions (for frontend)
 
 - 400: show validation message near the form
+- 403: show "Not authorized" message
 - 404: show "Not Found" state
 - 409: show clear conflict message (e.g., "Slot already reserved")
 
@@ -250,7 +288,7 @@ Appendix: Minimal API client examples (JS using fetch)
 ```js
 // api/index.js
 const api = (path, opts = {}) => fetch(`http://localhost:8080${path}`, {
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
   ...opts
 }).then(async res => {
   const text = await res.text();
@@ -281,7 +319,11 @@ import api from './index';
 export const createReservation = (payload) => api('/api/reservations', { method: 'POST', body: JSON.stringify(payload) });
 export const listReservations = () => api('/api/reservations');
 export const listByRequester = (id) => api(`/api/reservations/byRequester?requesterId=${id}`);
-export const listBySlot = (id) => api(`/api/reservations/bySlot?slotId=${id}`);
+export const listIncoming = (ownerId) => api(`/api/reservations/incoming?ownerId=${ownerId}`);
+export const acceptReservation = (id) => api(`/api/reservations/${id}/accept`, { method: 'POST' });
+export const rejectReservation = (id) => api(`/api/reservations/${id}/reject`, { method: 'POST' });
+export const cancelReservation = (id) => api(`/api/reservations/${id}/cancel`, { method: 'POST' });
+export const confirmedByUser = (id) => api(`/api/reservations/confirmed/byUser?userId=${id}`);
 
 // api/auth.js
 import api from './index';
@@ -291,9 +333,9 @@ export const login = (payload) => api('/api/auth/login', { method: 'POST', body:
 
 ---
 
-If you'd like, I can:
-- Add the `AvailabilitySlot` endpoints and DTOs to the CHANGES.md (already done), and open `API_DOC.md` in the editor for review.
-- Generate React components (basic forms/pages) against the API documentation.
-- Add unit + MockMvc tests to exercise the new slots/reservations endpoints.
+If you'd like, I can also:
+- Generate the frontend components that implement incoming requests, accept/reject flows and ensure the requester sees pending state.
+- Add or adjust backend controller endpoints if your server is missing `incoming`, `accept`, `reject`, or `cancel` handlers.
+- Add integration tests that exercise the full request -> accept -> confirmed lifecycle (using Testcontainers), and/or unit tests covering the ReservationService.
 
-Tell me which you'd like next and I'll implement it.
+Tell me which next step you want and I'll implement it.
